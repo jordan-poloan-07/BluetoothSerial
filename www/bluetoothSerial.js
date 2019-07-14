@@ -59,6 +59,11 @@ module.exports = {
         cordova.exec(success, failure, "BluetoothSerial", "write", [data]);
     },
 
+    writePending: function(data, pendingResponse, success, failure){
+        var waitTime = 1000;
+        cordova.exec(success, failure, "BluetoothSerial", "write", [data, pendingResponse, waitTime]);
+    },
+
     // calls the success callback when new data is available
     subscribe: function (delimiter, success, failure) {
         cordova.exec(success, failure, "BluetoothSerial", "subscribe", [delimiter]);

@@ -36,6 +36,7 @@ public class BluetoothSerial extends CordovaPlugin {
     private static final String CONNECT_INSECURE = "connectInsecure";
     private static final String DISCONNECT = "disconnect";
     private static final String WRITE = "write";
+    private static final String WRITE_PENDING = "writePending";
     private static final String AVAILABLE = "available";
     private static final String READ = "read";
     private static final String READ_UNTIL = "readUntil";
@@ -75,6 +76,7 @@ public class BluetoothSerial extends CordovaPlugin {
     public static final int MESSAGE_DEVICE_NAME = 4;
     public static final int MESSAGE_TOAST = 5;
     public static final int MESSAGE_READ_RAW = 6;
+    public static final int MESSAGE_READ_PENDING = 7;
 
     // Key names received from the BluetoothChatService Handler
     public static final String DEVICE_NAME = "device_name";
@@ -88,6 +90,8 @@ public class BluetoothSerial extends CordovaPlugin {
     private static final String ACCESS_COARSE_LOCATION = Manifest.permission.ACCESS_COARSE_LOCATION;
     private static final int CHECK_PERMISSIONS_REQ_CODE = 2;
     private CallbackContext permissionCallback;
+
+    private PendingResponseCaller prCaller;
 
     @Override
     public boolean execute(String action, CordovaArgs args, CallbackContext callbackContext) throws JSONException {
@@ -130,6 +134,28 @@ public class BluetoothSerial extends CordovaPlugin {
             byte[] data = args.getArrayBuffer(0);
             bluetoothSerialService.write(data);
             callbackContext.success();
+
+        } else if (action.equals(WRITE_PENDING)) {
+
+            byte[] data            = args.getString(0);
+            String pendingResponse = args.getString(1);
+            final int waitTime     = args.getInt(2);
+
+            bluetoothSerialService.writePending(data, pendingResponse);
+
+            Thread t = new Thread() {
+                public void run() {
+                    Thread.sleep( waitTime );
+                    callbackContext.success( read() );
+                }
+            };
+
+            if( prCaller == null ){
+                prCaller = new PendingResponseCaller(t);
+            } else {
+                prCaller.setPendingResponseThread(t);
+            }
+            
 
         } else if (action.equals(AVAILABLE)) {
 
@@ -361,6 +387,19 @@ public class BluetoothSerial extends CordovaPlugin {
 
          public void handleMessage(Message msg) {
              switch (msg.what) {
+                 case MESSAGE_READ_PENDING: 
+
+                    String pendingMsg = (String) msg.obj;
+
+                    if ( pendingMsg.equals("OK") ){
+                        prCaller.startThread();
+                    } else if ( pendingMsg.equals("ERROR") ){
+                        // error here
+                    } else {
+                        // pending responses here
+                    }
+
+                    break;
                  case MESSAGE_READ:
                     buffer.append((String)msg.obj);
 
