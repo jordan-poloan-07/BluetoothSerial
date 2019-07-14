@@ -200,6 +200,18 @@ public class BluetoothSerialService {
         setState(STATE_NONE);
     }
 
+
+    public void writePending(byte[] out, String pendingResponse){
+        ConnectedThread r;
+        // Synchronize a copy of the ConnectedThread
+        synchronized (this) {
+            if (mState != STATE_CONNECTED) return;
+            r = mConnectedThread;
+        }
+        // Perform the write unsynchronized
+        r.writePending(out, pendingResponse);
+    }
+
     /**
      * Write to the ConnectedThread in an unsynchronized manner
      * @param out The bytes to write
@@ -417,19 +429,26 @@ public class BluetoothSerialService {
      * It handles all incoming and outgoing transmissions.
      */
     private class ConnectedThread extends Thread {
+
         private final BluetoothSocket mmSocket;
-        private final InputStream mmInStream;
-        private final OutputStream mmOutStream;
+        private final InputStream     mmInStream;
+        private final OutputStream    mmOutStream;
+
+        private boolean  isPendingProcessed;
+        private String   pendingResponse;
+        private String[] pendingResponseBytes;
+        private int      waitTime;
 
         public ConnectedThread(BluetoothSocket socket, String socketType) {
             Log.d(TAG, "create ConnectedThread: " + socketType);
-            mmSocket = socket;
-            InputStream tmpIn = null;
+
+            mmSocket            = socket;
+            InputStream tmpIn   = null;
             OutputStream tmpOut = null;
 
             // Get the BluetoothSocket input and output streams
             try {
-                tmpIn = socket.getInputStream();
+                tmpIn  = socket.getInputStream();
                 tmpOut = socket.getOutputStream();
             } catch (IOException e) {
                 Log.e(TAG, "temp sockets not created", e);
@@ -440,6 +459,7 @@ public class BluetoothSerialService {
         }
 
         public void run() {
+
             Log.i(TAG, "BEGIN mConnectedThread");
             byte[] buffer = new byte[1024];
             int bytes;
@@ -450,6 +470,11 @@ public class BluetoothSerialService {
                     // Read from the InputStream
                     bytes = mmInStream.read(buffer);
                     String data = new String(buffer, 0, bytes);
+
+                    if( pendingResponse != null ){
+                        readPending(data);
+                        return;
+                    }
 
                     // Send the new data String to the UI Activity
                     mHandler.obtainMessage(BluetoothSerial.MESSAGE_READ, data).sendToTarget();
@@ -464,12 +489,65 @@ public class BluetoothSerialService {
 
                 } catch (IOException e) {
                     Log.e(TAG, "disconnected", e);
+                    this.isPendingProcessed = false;
+                    this.pendingResponse = null;
+                    this.pendingResponseBytes = null;
+                    this.waitTime = 0;
                     connectionLost();
                     // Start the service over to restart listening mode
                     BluetoothSerialService.this.start();
                     break;
                 }
             }
+        }
+
+        private void readPending(String data){
+
+            String cleanData = data.trim();
+
+            // check if empty string
+            if( cleanData.length() == 0 && isPendingProcessed ){
+                return;
+            } else {
+
+                String[] splitData = cleanData.split(" ");
+
+                if( splitData.length === 3 && isPendingProcessed ){
+                    
+                    boolean isFirstByteMatched = ( splitData[0].equals( pendingResponseBytes[0] ) );
+                    boolean isThirdByteMatched = ( splitData[2].equals( pendingResponseBytes[2] ) );
+
+                    if( isFirstByteMatched && isThirdByteMatched ){
+                        // good pending response received
+                        mHandler.obtainMessage(BluetoothSerial.MESSAGE_READ_PENDING, cleanData).sendToTarget();
+                    } else {
+                        // bad pending response received
+                        // throw error
+                        mHandler.obtainMessage(BluetoothSerial.MESSAGE_READ_PENDING, "ERROR").sendToTarget();
+                    }
+
+                } else {
+                    // most likely a good data
+                    if( isPendingProcessed != false ){
+                        isPendingProcessed = false;
+                        mHandler.obtainMessage(BluetoothSerial.MESSAGE_READ_PENDING, "OK").sendToTarget();
+                    }
+                    
+                    // Send the new data String to the UI Activity
+                    mHandler.obtainMessage(BluetoothSerial.MESSAGE_READ, data).sendToTarget();
+
+                    // Send the raw bytestream to the UI Activity.
+                    // We make a copy because the full array can have extra data at the end
+                    // when / if we read less than its size.
+                    if (bytes > 0) {
+                        byte[] rawdata = Arrays.copyOf(buffer, bytes);
+                        mHandler.obtainMessage(BluetoothSerial.MESSAGE_READ_RAW, rawdata).sendToTarget();
+                    }
+
+                }
+
+            }
+
         }
 
         /**
@@ -488,8 +566,33 @@ public class BluetoothSerialService {
             }
         }
 
+        public void writePending(byte[] buffer, String pendingResponse){
+            try {
+
+                this.isPendingProcessed = true;
+                this.pendingResponse = pendingResponse;
+                this.pendingResponseBytes = pendingResponse.split(" ");
+
+                mmOutStream.write(buffer);
+
+                // Share the sent message back to the UI Activity
+                mHandler.obtainMessage(BluetoothSerial.MESSAGE_WRITE, -1, -1, buffer).sendToTarget();
+
+            } catch (IOException e) {
+                this.isPendingProcessed = false;
+                this.pendingResponse = null;
+                this.pendingResponseBytes = null;
+                this.waitTime = 0;
+                Log.e(TAG, "Exception during write", e);
+            }
+        }
+
         public void cancel() {
             try {
+                this.isPendingProcessed = false;
+                this.pendingResponse = null;
+                this.pendingResponseBytes = null;
+                this.waitTime = 0;
                 mmSocket.close();
             } catch (IOException e) {
                 Log.e(TAG, "close() of connect socket failed", e);
